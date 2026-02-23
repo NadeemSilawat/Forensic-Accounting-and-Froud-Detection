@@ -7,6 +7,11 @@ export interface Transaction {
     type: 'sale' | 'purchase' | 'expense' | 'transfer' | 'loan_in' | 'loan_out';
     partyName: string;
     category: string;
+    // Bank details (from new form)
+    bankAccountNo?: string;
+    ifscCode?: string;
+    bankAddress?: string;
+    // Engine-computed fields (auto-derived, not entered manually)
     isRelatedParty: boolean;
     isDisclosed: boolean;
     actualCashFlow: number;
