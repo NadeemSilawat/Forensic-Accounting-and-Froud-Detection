@@ -8,7 +8,7 @@ const isMarch = (dateStr: string) => {
     return d.getMonth() === 2; // March is 2 (0-indexed)
 }
 
-export function analyzeTransaction(tx: Transaction, history: Transaction[]): RiskAnalysisResult {
+export function analyzeTransaction(tx: Transaction, _history: Transaction[]): RiskAnalysisResult {
     const factors: string[] = [];
     let score = 0;
 

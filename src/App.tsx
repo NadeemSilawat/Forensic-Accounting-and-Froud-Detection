@@ -1,30 +1,17 @@
 import { useState } from 'react'
 import './App.css'
 import Dashboard from './components/Dashboard'
-import FileUpload from './components/FileUpload'
-import { mockTransactions } from './lib/data'
-import type { Transaction } from './lib/types'
+import DataEntryForm from './components/DataEntryForm'
+import type { FormData } from './lib/types'
 
 function App() {
-  const [transactions, setTransactions] = useState<Transaction[] | null>(null)
+  const [formData, setFormData] = useState<FormData | null>(null)
 
-  const handleDataLoaded = (data: Transaction[]) => {
-    setTransactions(data)
+  if (formData) {
+    return <Dashboard formData={formData} onBack={() => setFormData(null)} />
   }
 
-  const handleUseSampleData = () => {
-    setTransactions(mockTransactions)
-  }
-
-  const handleBack = () => {
-    setTransactions(null)
-  }
-
-  if (transactions) {
-    return <Dashboard transactions={transactions} onBack={handleBack} />
-  }
-
-  return <FileUpload onDataLoaded={handleDataLoaded} onUseSampleData={handleUseSampleData} />
+  return <DataEntryForm onSubmit={setFormData} />
 }
 
 export default App

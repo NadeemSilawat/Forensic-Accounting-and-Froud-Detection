@@ -1,16 +1,15 @@
 
-import { USER_DATA } from './user_data';
-import type { Vendor, SalesRecord, CashFlowRecord, BankRecord, SalesSummaryRecord } from './user_data';
+import type { UserDataShape } from './user_data';
 
 export interface AnalysisResult {
-    duplicateVendors: { original: Vendor, duplicate: Vendor }[];
-    duplicateSales: { original: SalesRecord, duplicate: SalesRecord }[];
+    duplicateVendors: { original: any, duplicate: any }[];
+    duplicateSales: { original: any, duplicate: any }[];
     cashFlowAnomalies: { date: string, expected: number, actual: number, difference: number }[];
     circularTrading: { cycle: string[], amount: number }[];
     salesSpikes: { month: string, amount: number, growth: string }[];
 }
 
-export function analyzeUserData(): AnalysisResult {
+export function analyzeUserData(userData: UserDataShape): AnalysisResult {
     const result: AnalysisResult = {
         duplicateVendors: [],
         duplicateSales: [],
@@ -20,10 +19,9 @@ export function analyzeUserData(): AnalysisResult {
     };
 
     // 1. Detect Duplicate Vendors (Same Bank Account)
-    const vendorMap = new Map<string, Vendor>();
-    USER_DATA.vendors.forEach(vendor => {
+    const vendorMap = new Map<string, any>();
+    userData.vendors.forEach(vendor => {
         if (vendor.Bank_Account_number === 'N/A') return;
-
         if (vendorMap.has(vendor.Bank_Account_number)) {
             result.duplicateVendors.push({
                 original: vendorMap.get(vendor.Bank_Account_number)!,
@@ -34,9 +32,9 @@ export function analyzeUserData(): AnalysisResult {
         }
     });
 
-    // 2. Detect Duplicate Sales (Same ID or Details)
-    const salesMap = new Map<number, SalesRecord>();
-    USER_DATA.salesRegister.forEach(sale => {
+    // 2. Detect Duplicate Sales (Same ID)
+    const salesMap = new Map<number, any>();
+    userData.salesRegister.forEach(sale => {
         if (salesMap.has(sale.ID)) {
             result.duplicateSales.push({
                 original: salesMap.get(sale.ID)!,
@@ -48,7 +46,7 @@ export function analyzeUserData(): AnalysisResult {
     });
 
     // 3. Analyze Cash Flow
-    USER_DATA.cashFlow.forEach(record => {
+    userData.cashFlow.forEach(record => {
         const expectedClosing = record.Opening_Cash + record.Cash_In - record.Cash_Out;
         if (expectedClosing !== record.Closing_Cash) {
             result.cashFlowAnomalies.push({
@@ -60,18 +58,13 @@ export function analyzeUserData(): AnalysisResult {
         }
     });
 
-    // 4. Detect Circular Trading (Simple A->B->A check)
-    // Looking for pattern: A -> B (Amt), B -> A (Amt - small diff)
-    for (let i = 0; i < USER_DATA.bankStatement.length; i++) {
-        const tx1 = USER_DATA.bankStatement[i];
+    // 4. Detect Circular Trading (A→B→A check)
+    for (let i = 0; i < userData.bankStatement.length; i++) {
+        const tx1 = userData.bankStatement[i];
         if (!tx1.To_Account || !tx1.From_Account) continue;
-
-        for (let j = i + 1; j < USER_DATA.bankStatement.length; j++) {
-            const tx2 = USER_DATA.bankStatement[j];
-
-            // Checks if money returns to original sender
+        for (let j = i + 1; j < userData.bankStatement.length; j++) {
+            const tx2 = userData.bankStatement[j];
             if (tx1.To_Account === tx2.From_Account && tx1.From_Account === tx2.To_Account) {
-                // Check if amounts are similar (within 5% margin)
                 const margin = tx1.Amount * 0.05;
                 if (Math.abs(tx1.Amount - tx2.Amount) <= margin) {
                     result.circularTrading.push({
@@ -84,7 +77,7 @@ export function analyzeUserData(): AnalysisResult {
     }
 
     // 5. Detect Sales Spikes
-    USER_DATA.salesSummary.forEach(record => {
+    userData.salesSummary.forEach(record => {
         if (record.Remark && record.Remark.includes("HIGH JUMP")) {
             result.salesSpikes.push({
                 month: record.Month,
