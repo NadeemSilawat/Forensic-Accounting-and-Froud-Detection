@@ -11,6 +11,7 @@ export interface Transaction {
     bankAccountNo?: string;
     ifscCode?: string;
     bankAddress?: string;
+    gstOrPan?: string;
     // Engine-computed fields (auto-derived, not entered manually)
     isRelatedParty: boolean;
     isDisclosed: boolean;

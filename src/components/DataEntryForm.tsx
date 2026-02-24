@@ -31,7 +31,28 @@ const STEPS = [
 function uid() { return Math.random().toString(36).slice(2); }
 
 function normalizeKey(k: string) {
-    return k.trim().toLowerCase().replace(/[\s_\-\/]+/g, '');
+    return k.trim().toLowerCase().replace(/[\s_\-/.,()#]+/g, '');
+}
+
+function formatExcelDate(v: any): string {
+    if (!v) return '';
+    if (v instanceof Date) {
+        return v.toISOString().split('T')[0];
+    }
+    // Handle XLSX serial numbers if cellDates was not enough
+    if (typeof v === 'number' && v > 20000) {
+        const d = XLSX.SSF.parse_date_code(v);
+        return `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
+    }
+    // Fallback/String parsing
+    const str = String(v).trim();
+    if (!str) return '';
+    // If already YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+    // Common format DD/MM/YYYY or DD-MM-YYYY
+    const match = str.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+    if (match) return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+    return str;
 }
 
 function parseExcelFile<T>(file: File, mapRow: (row: Record<string, any>, i: number) => T): Promise<T[]> {
@@ -40,7 +61,7 @@ function parseExcelFile<T>(file: File, mapRow: (row: Record<string, any>, i: num
         reader.onload = e => {
             try {
                 const data = new Uint8Array(e.target!.result as ArrayBuffer);
-                const wb = XLSX.read(data, { type: 'array' });
+                const wb = XLSX.read(data, { type: 'array', cellDates: true });
                 const ws = wb.Sheets[wb.SheetNames[0]];
                 const json = XLSX.utils.sheet_to_json<Record<string, any>>(ws, { defval: '' });
                 // normalize keys
@@ -164,8 +185,35 @@ const StepDirectors = ({ data, onChange }: { data: Director[]; onChange: (d: Dir
     const set = (id: string, k: keyof Director, v: string) =>
         onChange(data.map(r => r.id === id ? { ...r, [k]: v } : r));
 
+    const handleExcel = async (file: File) => {
+        const rows = await parseExcelFile(file, (row) => {
+            const p = (keys: string[]) => {
+                for (const k of keys) {
+                    const norm = normalizeKey(k);
+                    if (row[norm] !== undefined && row[norm] !== '') return row[norm];
+                }
+                return '';
+            };
+            return {
+                id: uid(),
+                name: String(p(['name', 'directorsname', 'directorname', 'fullname'])),
+                mobile: String(p(['mobile', 'mobileno', 'phone', 'contact', 'phoneno'])),
+                homeAddress: String(p(['homeaddress', 'address', 'residentialaddress', 'home'])),
+                bankAccountNo: String(p(['bankaccountno', 'bankaccount', 'accountno', 'account', 'accountnumber', 'bankaccountnumber'])),
+                ifscCode: String(p(['ifsccode', 'ifsc'])),
+                bankAddress: String(p(['bankaddress', 'bankaddr'])),
+            } as Director;
+        });
+        onChange([...data, ...rows]);
+    };
+
     return (
         <div className="space-y-4">
+            <ExcelUploadBanner
+                label="Import Directors from Excel"
+                columns="Name, Mobile No., Home Address, Bank Account No., IFSC Code, Bank Address"
+                onUpload={handleExcel}
+            />
             <div className="overflow-x-auto rounded-lg border border-border">
                 <table className="w-full">
                     <thead className="border-b border-border bg-muted/10">
@@ -220,6 +268,7 @@ const StepTransactions = ({
     const makeBlank = (): Transaction => ({
         id: `T-${Date.now()}`, date: '', amount: 0, type: 'sale',
         partyName: '', bankAccountNo: '', ifscCode: '', bankAddress: '',
+        gstOrPan: '',
         category: 'General', isRelatedParty: false, isDisclosed: true, actualCashFlow: 0,
     });
 
@@ -236,24 +285,34 @@ const StepTransactions = ({
 
     const handleExcel = async (file: File) => {
         const rows = await parseExcelFile(file, (row, i) => {
+            // Two-pass lookup: (1) exact normalized match, (2) key-contains fallback
             const p = (keys: string[]) => {
-                for (const k of keys) if (row[k] !== undefined && row[k] !== '') return String(row[k]);
+                // Pass 1: exact match
+                for (const k of keys) {
+                    if (row[k] !== undefined && row[k] !== '') return row[k];
+                }
+                // Pass 2: check if any row key contains one of our aliases as a substring
+                for (const k of keys) {
+                    const found = Object.keys(row).find(rk => rk.includes(k) || k.includes(rk));
+                    if (found && row[found] !== undefined && row[found] !== '') return row[found];
+                }
                 return '';
             };
-            const partyName = p(['partyname', 'party', 'customer', 'vendor']);
+            const partyName = String(p(['partyname', 'party', 'customer', 'vendor', 'suppliername', 'supplier']));
             return {
-                id: p(['transactionid', 'txnid', 'id']) || `T-UPLOAD-${i + 1}`,
-                date: p(['date', 'transactiondate']),
-                amount: Math.abs(parseFloat(p(['amount', 'value'])) || 0),
-                type: (p(['type', 'transactiontype']) || 'sale').toLowerCase().trim() as Transaction['type'],
+                id: String(p(['transactionid', 'txnid', 'id'])) || `T-UPLOAD-${i + 1}`,
+                date: formatExcelDate(p(['date', 'transactiondate'])),
+                amount: Math.abs(parseFloat(String(p(['amount', 'value', 'totalamount']))) || 0),
+                type: (String(p(['type', 'transactiontype'])) || 'sale').toLowerCase().trim() as Transaction['type'],
                 partyName,
-                bankAccountNo: p(['bankaccountno', 'bankaccount', 'accountno', 'account']),
-                ifscCode: p(['ifsccode', 'ifsc']),
-                bankAddress: p(['bankaddress', 'bankaddr']),
-                category: p(['category', 'head']) || 'General',
+                bankAccountNo: String(p(['bankaccountno', 'bankaccount', 'accountno', 'account', 'accountnumber', 'bankaccountnumber', 'acno', 'accno', 'bankac'])),
+                ifscCode: String(p(['ifsccode', 'ifsc'])),
+                bankAddress: String(p(['bankaddress', 'bankaddr', 'branchaddress'])),
+                gstOrPan: String(p(['gstno', 'pan', 'gstorpan', 'gstin', 'gst', 'gstpan', 'gstnumber', 'pannumber', 'panno', 'gstpanno', 'taxid'])),
+                category: String(p(['category', 'head'])) || 'General',
                 isRelatedParty: isRelated(partyName),
                 isDisclosed: true,
-                actualCashFlow: parseFloat(p(['cashflow', 'actualcashflow', 'cash'])) || 0,
+                actualCashFlow: parseFloat(String(p(['cashflow', 'actualcashflow', 'cash']))) || 0,
             } as Transaction;
         });
         onChange([...data, ...rows]);
@@ -286,6 +345,7 @@ const StepTransactions = ({
                             <TH>Bank Account No.</TH>
                             <TH>IFSC Code</TH>
                             <TH>Bank Address</TH>
+                            <TH>GST / PAN</TH>
                             <TH>Related?</TH>
                             <TH></TH>
                         </tr>
@@ -310,6 +370,7 @@ const StepTransactions = ({
                                     <TD><input className={tableInput} placeholder="Account No." value={r.bankAccountNo || ''} onChange={e => set(r.id, 'bankAccountNo', e.target.value)} /></TD>
                                     <TD><input className={tableInput} placeholder="IFSC" value={r.ifscCode || ''} onChange={e => set(r.id, 'ifscCode', e.target.value)} /></TD>
                                     <TD><input className={tableInput} placeholder="Bank Address" value={r.bankAddress || ''} onChange={e => set(r.id, 'bankAddress', e.target.value)} /></TD>
+                                    <TD><input className={tableInput} placeholder="GST/PAN" value={r.gstOrPan || ''} onChange={e => set(r.id, 'gstOrPan', e.target.value)} /></TD>
                                     <TD className="text-center">
                                         {related
                                             ? <span className="inline-flex items-center gap-1 rounded-full bg-orange-400/10 px-2 py-0.5 text-[10px] font-medium text-orange-400">✓ Director</span>
@@ -330,48 +391,16 @@ const StepTransactions = ({
 // ─── Step 4 — Vendor List ──────────────────────────────────────────────────────
 
 const StepVendors = ({ data, onChange }: { data: VendorEntry[]; onChange: (d: VendorEntry[]) => void }) => {
-    const makeBlank = (): VendorEntry => ({
-        id: uid(), transactionId: '', date: '', amount: '', type: 'Purchase',
-        vendorName: '', bankAccountNo: '', ifscCode: '', bankAddress: '',
-        gstOrPan: '', isRelatedParty: false, isDisclosed: true,
-    });
-
-    const add = () => onChange([...data, makeBlank()]);
     const del = (id: string) => onChange(data.filter(r => r.id !== id));
     const set = (id: string, k: keyof VendorEntry, v: any) =>
         onChange(data.map(r => r.id === id ? { ...r, [k]: v } : r));
 
-    const handleExcel = async (file: File) => {
-        const rows = await parseExcelFile(file, (row, i) => {
-            const p = (keys: string[]) => {
-                for (const k of keys) if (row[k] !== undefined && row[k] !== '') return String(row[k]);
-                return '';
-            };
-            return {
-                id: uid(),
-                transactionId: p(['transactionid', 'txnid', 'id']) || `V-${i + 1}`,
-                date: p(['date']),
-                amount: p(['amount', 'value']),
-                type: p(['type']) || 'Purchase',
-                vendorName: p(['vendorname', 'suppliername', 'vendor', 'supplier', 'name']),
-                bankAccountNo: p(['bankaccountno', 'bankaccount', 'accountno', 'account', 'bankaccountnumber']),
-                ifscCode: p(['ifsccode', 'ifsc']),
-                bankAddress: p(['bankaddress', 'bankaddr']),
-                gstOrPan: p(['gstno', 'pan', 'gstorpan', 'gstin', 'gst']),
-                isRelatedParty: false,
-                isDisclosed: true,
-            } as VendorEntry;
-        });
-        onChange([...data, ...rows]);
-    };
-
     return (
         <div className="space-y-4">
-            <ExcelUploadBanner
-                label="Import Vendor List from Excel"
-                columns="Txn ID, Date, Amount, Type, Vendor Name, Bank Account No., IFSC Code, Bank Address, GST/PAN"
-                onUpload={handleExcel}
-            />
+            <div className="rounded-lg border border-blue-900/40 bg-blue-950/20 px-4 py-2 text-xs text-blue-300">
+                <ShoppingCart className="h-3.5 w-3.5 inline mr-2" />
+                <span>The Vendor List is automatically populated from your <strong>Purchase</strong> transactions. You can add GST/PAN and additional details here.</span>
+            </div>
             <div className="overflow-x-auto rounded-lg border border-border">
                 <table className="w-full">
                     <thead className="border-b border-border bg-muted/10">
@@ -418,7 +447,6 @@ const StepVendors = ({ data, onChange }: { data: VendorEntry[]; onChange: (d: Ve
                     </tbody>
                 </table>
             </div>
-            <AddRowBtn onClick={add} />
         </div>
     );
 };
@@ -435,17 +463,20 @@ const StepCashFlow = ({ data, onChange }: { data: CashFlowEntry[]; onChange: (d:
     const handleExcel = async (file: File) => {
         const rows = await parseExcelFile(file, row => {
             const p = (keys: string[]) => {
-                for (const k of keys) if (row[k] !== undefined && row[k] !== '') return String(row[k]);
+                for (const k of keys) {
+                    const norm = normalizeKey(k);
+                    if (row[norm] !== undefined && row[norm] !== '') return row[norm];
+                }
                 return '';
             };
             return {
                 id: uid(),
-                date: p(['date']),
-                openingCash: p(['openingcash', 'opening']),
-                cashIn: p(['cashin', 'cashinflow', 'in']),
-                cashOut: p(['cashout', 'cashoutflow', 'out']),
-                closingCash: p(['closingcash', 'closing']),
-                flag: p(['flag', 'status']) || 'OK',
+                date: formatExcelDate(p(['date'])),
+                openingCash: String(p(['openingcash', 'opening'])),
+                cashIn: String(p(['cashin', 'cashinflow', 'in'])),
+                cashOut: String(p(['cashout', 'cashoutflow', 'out'])),
+                closingCash: String(p(['closingcash', 'closing'])),
+                flag: String(p(['flag', 'status'])) || 'OK',
             } as CashFlowEntry;
         });
         onChange([...data, ...rows]);
@@ -585,9 +616,15 @@ const StepSalesPurchase = ({
     onSalesChange: (d: MonthlySummaryEntry[]) => void;
     onPurchasesChange: (d: MonthlySummaryEntry[]) => void;
 }) => (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <MonthTable title="Sales — Month-wise Summary" color="text-green-400" data={sales} onChange={onSalesChange} />
-        <MonthTable title="Purchase — Month-wise Summary" color="text-orange-400" data={purchases} onChange={onPurchasesChange} />
+    <div className="space-y-4">
+        <div className="flex items-center gap-2 rounded-lg border border-blue-900/40 bg-blue-950/20 px-4 py-2 text-xs text-blue-300">
+            <BarChart3 className="h-3.5 w-3.5 shrink-0" />
+            <span>Totals are <strong>auto-computed</strong> from your Transactions. You can still add or edit rows manually.</span>
+        </div>
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <MonthTable title="Sales — Month-wise Summary" color="text-green-400" data={sales} onChange={onSalesChange} />
+            <MonthTable title="Purchase — Month-wise Summary" color="text-orange-400" data={purchases} onChange={onPurchasesChange} />
+        </div>
     </div>
 );
 
@@ -619,6 +656,10 @@ const StepBankDetails = ({ data, onChange }: { data: BankEntry[]; onChange: (d: 
 
     return (
         <div className="space-y-4">
+            <div className="flex items-center gap-2 rounded-lg border border-blue-900/40 bg-blue-950/20 px-4 py-2 text-xs text-blue-300">
+                <Landmark className="h-3.5 w-3.5 shrink-0" />
+                <span>Bank entries are <strong>auto-populated</strong> from your Transactions and Board of Directors. You can still upload from Excel or add rows manually.</span>
+            </div>
             <ExcelUploadBanner
                 label="Import Bank Statement from Excel"
                 columns="From Account, To Account, Amount, Remark"
@@ -663,6 +704,157 @@ const StepBankDetails = ({ data, onChange }: { data: BankEntry[]; onChange: (d: 
 const DataEntryForm: React.FC<DataEntryFormProps> = ({ onSubmit }) => {
     const [step, setStep] = useState(1);
     const [form, setForm] = useState<FormData>(emptyFormData);
+
+    // Auto-sync Vendor List from Purchase Transactions
+    React.useEffect(() => {
+        const purchases = form.transactions.filter(t => t.type === 'purchase');
+        const existingVendors = [...form.vendors];
+
+        let changed = false;
+        const newVendors: VendorEntry[] = purchases.map(t => {
+            const existing = existingVendors.find(v => v.transactionId === t.id);
+            if (existing) {
+                // Update basic fields but keep user-entered GST/PAN
+                if (existing.vendorName !== t.partyName || existing.amount !== String(t.amount) || existing.date !== t.date) {
+                    changed = true;
+                    return {
+                        ...existing,
+                        vendorName: t.partyName,
+                        date: t.date,
+                        amount: String(t.amount),
+                        bankAccountNo: t.bankAccountNo || existing.bankAccountNo,
+                        ifscCode: t.ifscCode || existing.ifscCode,
+                        bankAddress: t.bankAddress || existing.bankAddress,
+                        gstOrPan: t.gstOrPan || existing.gstOrPan,
+                    };
+                }
+                return existing;
+            }
+            changed = true;
+            return {
+                id: uid(),
+                transactionId: t.id,
+                date: t.date,
+                amount: String(t.amount),
+                type: 'Purchase',
+                vendorName: t.partyName,
+                bankAccountNo: t.bankAccountNo || '',
+                ifscCode: t.ifscCode || '',
+                bankAddress: t.bankAddress || '',
+                gstOrPan: t.gstOrPan || '',
+                isRelatedParty: t.isRelatedParty,
+                isDisclosed: t.isDisclosed
+            };
+        });
+
+        // Also remove vendors whose transactions are no longer 'purchase' or deleted
+        if (newVendors.length !== existingVendors.length) changed = true;
+
+        if (changed) {
+            setForm(prev => ({ ...prev, vendors: newVendors }));
+        }
+    }, [form.transactions, form.vendors]); // Safe because of 'changed' check
+
+    // Auto-compute Sales & Purchase monthly summary from Transactions
+    React.useEffect(() => {
+        const MONTH_LABELS = ['APR', 'MAY', 'JUNE', 'JULY', 'AUG', 'SEPT', 'OCT', 'NOV', 'DEC', 'JAN', 'FEB', 'MAR'];
+        // month number → label index: 4→0(APR)...12→8(DEC), 1→9(JAN), 2→10(FEB), 3→11(MAR)
+        const monthIndex = (m: number) => m >= 4 ? m - 4 : m + 8;
+
+        const salesMap: Record<string, number> = {};
+        const purchaseMap: Record<string, number> = {};
+
+        for (const t of form.transactions) {
+            if (!t.date || !t.amount) continue;
+            const dateObj = new Date(t.date);
+            if (isNaN(dateObj.getTime())) continue;
+            const label = MONTH_LABELS[monthIndex(dateObj.getMonth() + 1)];
+            if (t.type === 'sale') {
+                salesMap[label] = (salesMap[label] || 0) + t.amount;
+            } else if (t.type === 'purchase') {
+                purchaseMap[label] = (purchaseMap[label] || 0) + t.amount;
+            }
+        }
+
+        const toEntries = (map: Record<string, number>): MonthlySummaryEntry[] =>
+            MONTH_LABELS
+                .filter(m => map[m])
+                .map(m => ({ id: `auto-${m}`, month: m, amount: String(map[m]) }));
+
+        const newSales = toEntries(salesMap);
+        const newPurchases = toEntries(purchaseMap);
+
+        // Only update if the auto-computed values differ from current (avoid loop)
+        const same = (a: MonthlySummaryEntry[], b: MonthlySummaryEntry[]) =>
+            a.length === b.length && a.every((r, i) => r.month === b[i]?.month && r.amount === b[i]?.amount);
+
+        if (!same(newSales, form.salesSummary.filter(r => r.id.startsWith('auto-')))) {
+            setForm(prev => ({
+                ...prev,
+                salesSummary: [
+                    ...newSales,
+                    ...prev.salesSummary.filter(r => !r.id.startsWith('auto-')),
+                ],
+            }));
+        }
+        if (!same(newPurchases, form.purchaseSummary.filter(r => r.id.startsWith('auto-')))) {
+            setForm(prev => ({
+                ...prev,
+                purchaseSummary: [
+                    ...newPurchases,
+                    ...prev.purchaseSummary.filter(r => !r.id.startsWith('auto-')),
+                ],
+            }));
+        }
+    }, [form.transactions]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Auto-populate Bank Details from Transactions + Directors
+    React.useEffect(() => {
+        const companyName = form.company.name || 'Company Account';
+
+        // Build entries from transactions
+        const txnEntries: BankEntry[] = form.transactions
+            .filter(t => t.amount > 0)
+            .map(t => {
+                const party = t.bankAccountNo
+                    ? `${t.partyName} (${t.bankAccountNo})`
+                    : t.partyName || '—';
+                const isOutflow = t.type === 'purchase' || t.type === 'expense' || t.type === 'loan_out' || t.type === 'transfer';
+                return {
+                    id: `bkauto-txn-${t.id}`,
+                    fromAccount: isOutflow ? companyName : party,
+                    toAccount: isOutflow ? party : companyName,
+                    amount: String(t.amount),
+                    remark: `${t.type.charAt(0).toUpperCase() + t.type.slice(1)} — ${t.partyName}${t.date ? ' | ' + t.date : ''}`,
+                };
+            });
+
+        // Build entries from Directors with bank accounts
+        const dirEntries: BankEntry[] = form.directors
+            .filter(d => d.name && d.bankAccountNo)
+            .map(d => ({
+                id: `bkauto-dir-${d.id}`,
+                fromAccount: companyName,
+                toAccount: `${d.name} (${d.bankAccountNo})`,
+                amount: '',
+                remark: `Director — ${d.name}${d.ifscCode ? ' | IFSC: ' + d.ifscCode : ''}`,
+            }));
+
+        const autoEntries = [...txnEntries, ...dirEntries];
+
+        // Avoid infinite loop — only update if auto entries changed
+        const currentAuto = form.bankDetails.filter(r => r.id.startsWith('bkauto-'));
+        const same = JSON.stringify(autoEntries) === JSON.stringify(currentAuto);
+        if (!same) {
+            setForm(prev => ({
+                ...prev,
+                bankDetails: [
+                    ...autoEntries,
+                    ...prev.bankDetails.filter(r => !r.id.startsWith('bkauto-')),
+                ],
+            }));
+        }
+    }, [form.transactions, form.directors, form.company.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const update = useCallback(<K extends keyof FormData>(key: K, val: FormData[K]) => {
         setForm(prev => ({ ...prev, [key]: val }));
